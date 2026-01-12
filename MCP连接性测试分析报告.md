@@ -321,21 +321,224 @@ async with Client("http://localhost:8000") as client:
 
 ### 4.3 标准输入输出传输 (StdioTransport)
 
-**用途**：命令行工具
-**优点**：简单，无需网络
-**示例**：
+**用途**：命令行工具、进程间通信
+**优点**：简单，无需网络，适合独立进程
+**特点**：通过标准输入输出与子进程通信
+
+#### 基本连接方式
+
 ```python
 from fastmcp.client import Client
 from pathlib import Path
 
-# Python 服务器
+# 方式1: Python 服务器（自动检测）
 async with Client(Path("server.py")) as client:
     tools = await client.list_tools()
 
-# Node.js 服务器
+# 方式2: Node.js 服务器（命令字符串）
 async with Client("npx @modelcontextprotocol/server-example") as client:
     tools = await client.list_tools()
+
+# 方式3: 显式指定传输类型
+from fastmcp.client.transports import PythonStdioTransport
+
+transport = PythonStdioTransport(script_path=Path("server.py"))
+async with Client(transport=transport) as client:
+    tools = await client.list_tools()
 ```
+
+#### Stdio 传输的测试方法
+
+**重要提示**：Stdio 传输与其他传输方式使用**完全相同的测试方法**！
+
+所有在第3节介绍的测试方法（`ping()`、`initialize_result`、`list_tools()`、综合健康检查）都适用于 stdio 传输。唯一的区别是客户端的创建方式。
+
+**完整示例 - Stdio 传输的健康检查**：
+
+```python
+from fastmcp.client import Client
+from pathlib import Path
+
+async def test_stdio_server_health(server_path: Path):
+    """测试 stdio 服务器的健康状态"""
+    
+    try:
+        # 连接到 stdio 服务器
+        async with Client(server_path, timeout=10) as client:
+            # 方法1: Ping 测试
+            ping_result = await client.ping()
+            print(f"✅ Ping: {ping_result}")
+            
+            # 方法2: 检查初始化结果
+            init_result = client.initialize_result
+            if init_result and init_result.serverInfo:
+                print(f"✅ 服务器: {init_result.serverInfo.name}")
+                print(f"   版本: {init_result.serverInfo.version}")
+            
+            # 方法3: 列出工具
+            tools = await client.list_tools()
+            print(f"✅ 工具数量: {len(tools)}")
+            for tool in tools:
+                print(f"   - {tool.name}")
+            
+            # 方法4: 实际调用工具
+            if tools:
+                result = await client.call_tool(
+                    tools[0].name, 
+                    {}  # 根据工具需要传入参数
+                )
+                print(f"✅ 工具执行: {result.is_error is False}")
+            
+            return True
+            
+    except Exception as e:
+        print(f"❌ 连接失败: {e}")
+        return False
+
+# 使用示例
+import asyncio
+
+# 测试 Python 服务器
+asyncio.run(test_stdio_server_health(Path("server.py")))
+
+# 测试 Node.js 服务器
+asyncio.run(test_stdio_server_health("npx my-mcp-server"))
+```
+
+#### Stdio 传输的特殊注意事项
+
+1. **进程生命周期**：
+   - Stdio 传输会启动一个子进程
+   - 进程在 `async with` 块结束时自动清理
+   - 确保服务器脚本可执行且依赖已安装
+
+2. **超时设置**：
+   ```python
+   # Stdio 服务器启动可能需要更长时间
+   async with Client(Path("server.py"), init_timeout=30) as client:
+       tools = await client.list_tools()
+   ```
+
+3. **错误诊断**：
+   ```python
+   try:
+       async with Client(Path("server.py")) as client:
+           tools = await client.list_tools()
+   except FileNotFoundError:
+       print("❌ 服务器文件不存在")
+   except TimeoutError:
+       print("❌ 服务器启动超时（检查依赖是否安装）")
+   except Exception as e:
+       print(f"❌ 其他错误: {e}")
+   ```
+
+4. **Python vs Node.js**：
+   ```python
+   # Python 服务器 - 使用 Path 对象
+   from pathlib import Path
+   async with Client(Path("server.py")) as client:
+       pass
+   
+   # Node.js 服务器 - 使用命令字符串
+   async with Client("node server.js") as client:
+       pass
+   
+   # 或使用 npx
+   async with Client("npx @modelcontextprotocol/server-example") as client:
+       pass
+   ```
+
+#### 完整的 Stdio 测试脚本
+
+```python
+#!/usr/bin/env python3
+"""
+Stdio 传输 MCP 服务器测试脚本
+"""
+
+import asyncio
+from pathlib import Path
+from fastmcp.client import Client
+
+async def comprehensive_stdio_test(server_path):
+    """Stdio 服务器的综合测试"""
+    
+    print(f"\n{'='*60}")
+    print(f"测试 Stdio 服务器: {server_path}")
+    print(f"{'='*60}\n")
+    
+    try:
+        async with Client(server_path, timeout=10, init_timeout=30) as client:
+            # 测试 1: 连接性
+            print("1️⃣ 测试连接性 (ping)...")
+            ping_ok = await client.ping()
+            print(f"   {'✅' if ping_ok else '❌'} Ping 结果: {ping_ok}\n")
+            
+            # 测试 2: 初始化信息
+            print("2️⃣ 测试初始化...")
+            init = client.initialize_result
+            if init and init.serverInfo:
+                print(f"   ✅ 服务器名称: {init.serverInfo.name}")
+                print(f"   ✅ 服务器版本: {init.serverInfo.version}\n")
+            else:
+                print(f"   ❌ 初始化失败\n")
+                return False
+            
+            # 测试 3: 工具列表
+            print("3️⃣ 测试工具列表...")
+            tools = await client.list_tools()
+            print(f"   ✅ 工具数量: {len(tools)}")
+            for tool in tools[:3]:  # 只显示前3个
+                print(f"      - {tool.name}: {tool.description}")
+            if len(tools) > 3:
+                print(f"      ... 还有 {len(tools) - 3} 个工具")
+            print()
+            
+            # 测试 4: 资源列表
+            print("4️⃣ 测试资源列表...")
+            resources = await client.list_resources()
+            print(f"   ✅ 资源数量: {len(resources)}\n")
+            
+            # 测试 5: 提示列表
+            print("5️⃣ 测试提示列表...")
+            prompts = await client.list_prompts()
+            print(f"   ✅ 提示数量: {len(prompts)}\n")
+            
+            print(f"{'='*60}")
+            print("🎉 所有测试通过！服务器运行正常。")
+            print(f"{'='*60}")
+            
+            return True
+            
+    except FileNotFoundError:
+        print(f"❌ 错误: 找不到服务器文件 {server_path}")
+        return False
+    except TimeoutError:
+        print(f"❌ 错误: 连接超时（服务器可能启动失败）")
+        print("   提示: 检查服务器依赖是否已安装")
+        return False
+    except Exception as e:
+        print(f"❌ 错误: {e}")
+        return False
+
+async def main():
+    # 测试示例
+    server_path = Path("examples/simple_echo.py")
+    
+    if not server_path.exists():
+        print(f"⚠️  示例服务器不存在: {server_path}")
+        print("请修改 server_path 为实际的服务器路径")
+        return
+    
+    success = await comprehensive_stdio_test(server_path)
+    return 0 if success else 1
+
+if __name__ == "__main__":
+    exit_code = asyncio.run(main())
+    exit(exit_code)
+```
+
+**总结**：Stdio 传输与内存传输、HTTP 传输使用完全相同的测试方法（`ping()`、`list_tools()` 等），只是连接方式不同。所有第3节的测试方法都完全适用！
 
 ## 5. 推荐的测试策略
 
